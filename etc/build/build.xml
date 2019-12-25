@@ -119,6 +119,7 @@
 				<file name="Sidebar-Bootstrap.js" />
 				<file name="Sidebar-BPMN.js" />
 				<file name="Sidebar-Cabinet.js" />
+				<file name="Sidebar-Cisco19.js" />
 				<file name="Sidebar-CiscoSafe.js" />
 				<file name="Sidebar-Citrix.js" />
 				<file name="Sidebar-Cumulus.js" />
@@ -135,6 +136,7 @@
 				<file name="Sidebar-Infographic.js" />
 				<file name="Sidebar-Ios.js" />
 				<file name="Sidebar-Ios7.js" />
+				<file name="Sidebar-Kubernetes.js" />
 				<file name="Sidebar-LeanMapping.js" />
 				<file name="Sidebar-Mockup.js" />
 				<file name="Sidebar-MSCAE.js" />

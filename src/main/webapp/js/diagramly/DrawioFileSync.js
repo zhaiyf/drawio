@@ -102,7 +102,7 @@ DrawioFileSync = function(file)
 		}
 	});
 	
-	// Listens to remove messages
+	// Listens to messages
 	this.changeListener = mxUtils.bind(this, function(data)
 	{
 		this.file.stats.msgReceived++;
@@ -135,11 +135,17 @@ DrawioFileSync = function(file)
 			}
 			catch (e)
 			{
-				var len = (data != null) ? data.length : 'null';
+				// Checks if file was changed
+				if (this.isConnected())
+				{
+					this.fileChangedNotify();
+				}
 				
-				EditorUi.logError('Protocol Error ' + e.message,
-					null, 'data_' + len + '_file_' + this.file.getHash() +
-					'_client_' + this.clientId);
+//				var len = (data != null) ? data.length : 'null';
+//				
+//				EditorUi.logError('Protocol Error ' + e.message,
+//					null, 'data_' + len + '_file_' + this.file.getHash() +
+//					'_client_' + this.clientId);
 				
 				if (window.console != null)
 				{
@@ -255,7 +261,7 @@ DrawioFileSync.prototype.start = function()
 			{
 				this.pusher.connect();
 				this.channel = this.pusher.subscribe(this.channelId);
-				EditorUi.debug('Sync.start', [this]);
+				EditorUi.debug('Sync.start', [this, 'v' + DrawioFileSync.PROTOCOL]);
 			}
 			catch (e)
 			{

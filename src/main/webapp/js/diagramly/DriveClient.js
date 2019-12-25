@@ -154,6 +154,11 @@ DriveClient.prototype.maxRetries = 5;
 /**
  * Executes the first step for connecting to Google Drive.
  */
+DriveClient.prototype.staleEtagMaxRetries = 3;
+
+/**
+ * Executes the first step for connecting to Google Drive.
+ */
 DriveClient.prototype.coolOff = 1000;
 
 /**
@@ -1227,6 +1232,7 @@ DriveClient.prototype.saveFile = function(file, revision, success, errFn, noChec
 					new Date().toISOString() + ':' +
 					'\n\nBrowser=' + navigator.userAgent +
 					'\nFile=' + file.desc.id + '.' + file.desc.headRevisionId +
+					'\nMime=' + file.desc.mimeType +
 					'\nUser=' + ((this.user != null) ? this.user.id : 'nouser') +
 					 	((file.sync != null) ? '-client_' + file.sync.clientId : '-nosync') +
 					'\nSaveLevel=' + file.saveLevel +
@@ -1258,35 +1264,37 @@ DriveClient.prototype.saveFile = function(file, revision, success, errFn, noChec
 			// However, this would result in a missing thumbnail in most cases so a better solution might be to reduce
 			// the autosave interval in DriveRealtime, but that would increase the number of requests.
 			unloading = (unloading != null) ? unloading : false;
+			var prevDesc = null;
+			var pinned = false;
+			var meta =
+			{
+				'mimeType': file.desc.mimeType,
+				'title': file.getTitle()
+			};
 			
+			// Overrides old mime type and creates a revision
+			if (this.isGoogleRealtimeMimeType(meta.mimeType))
+			{
+				meta.mimeType = this.xmlMimeType;
+				prevDesc = file.desc;
+				revision = true;
+				pinned = true;
+			}
+			// Overrides mime type for unknown file type uploads
+			else if (meta.mimeType == 'application/octet-stream' ||
+				(urlParams['override-mime'] == '1' &&
+				meta.mimeType != this.xmlMimeType))
+			{
+				meta.mimeType = this.xmlMimeType;
+			}
+					
 			// Adds optional thumbnail to upload request
 			var doSave = mxUtils.bind(this, function(thumb, thumbMime, keepExisting)
 			{
 				try
 				{
 					file.saveLevel = 3;
-					var prevDesc = null;
-					var pinned = false;
-					var meta =
-					{
-						'mimeType': file.desc.mimeType,
-						'title': file.getTitle()
-					};
-					
-					// Overrides old mime type and creates a revision
-					if (this.isGoogleRealtimeMimeType(file.desc.mimeType))
-					{
-						meta.mimeType = this.xmlMimeType;
-						prevDesc = file.desc;
-						revision = true;
-						pinned = true;
-					}
-					// Overrides mime type for unknown file type uploads
-					else if (meta.mimeType == 'application/octet-stream')
-					{
-						meta.mimeType = this.xmlMimeType;
-					}
-					
+
 					if (file.constructor == DriveFile)
 					{
 						if (properties == null)
@@ -1513,8 +1521,7 @@ DriveClient.prototype.saveFile = function(file, revision, success, errFn, noChec
 												}
 												else
 												{
-													// Check for stale etag which can happen if a file is being saved or if
-													// the etag simply isn't change but system still returns a 412 error (stale)
+													// Workaround for correct etag and Google always returns 412 conflict error (stale etag)
 													this.executeRequest({
 														url: '/files/' + file.getId() + '?supportsTeamDrives=true&fields=' + this.catchupFields
 													}, 
@@ -1527,12 +1534,19 @@ DriveClient.prototype.saveFile = function(file, revision, success, errFn, noChec
 															// Stale etag detected, retry with delay
 															if (resp != null && resp.etag == etag)
 															{
-																if (retryCount < this.maxRetries)
+																if (retryCount < this.staleEtagMaxRetries)
 																{
 																	retryCount++;
 																	var jitter = 1 + 0.1 * (Math.random() - 0.5);
 																	var delay = retryCount * 2 * this.coolOff * jitter;
 																	window.setTimeout(executeSave, delay);
+																	
+																	
+																	if (urlParams['test'] == '1')
+																	{
+																		EditorUi.debug('DriveClient: Stale Etag Detected',
+																			'retry', retryCount, 'delay', delay);
+																	}
 																}
 																else
 																{
@@ -1541,10 +1555,16 @@ DriveClient.prototype.saveFile = function(file, revision, success, errFn, noChec
 																	// Logs overwrite
 																	try
 																	{
-																		EditorUi.logError('Warning: Stale Etag Overwrite ' + file.getHash(),
-																			null, file.desc.id + '.' + file.desc.headRevisionId,
-																			((this.user != null) ? ('user_' + this.user.id) : 'nouser') +
-																			((file.sync != null) ? ('-client_' + file.sync.clientId) : '-nosync'));
+																		EditorUi.logEvent({category: 'STALE-ETAG-SAVE-FILE-' + file.getHash(),
+																			action: 'rev_' + file.desc.headRevisionId + '-mod_' + file.desc.modifiedDate +
+																				'-size_' + file.getSize() + '-mime_' + file.desc.mimeType +
+																			((this.ui.editor.autosave) ? '' : '-nosave') +
+																			((file.isAutosave()) ? '' : '-noauto') +
+																			((file.changeListenerEnabled) ? '' : '-nolisten') +
+																			((file.inConflictState) ? '-conflict' : '') +
+																			((file.invalidChecksum) ? '-invalid' : ''),
+																			label: ((this.user != null) ? ('user_' + this.user.id) : 'nouser') +
+																			((file.sync != null) ? ('-client_' + file.sync.clientId) : '-nosync')});
 																	}
 																	catch (e)
 																	{
@@ -1615,6 +1635,7 @@ DriveClient.prototype.saveFile = function(file, revision, success, errFn, noChec
 									},
 									mxUtils.bind(this, function(desc2)
 									{
+										file.saveLevel = 11;
 										window.clearTimeout(timeoutThread);
 										
 										if (acceptResponse)
@@ -1650,6 +1671,7 @@ DriveClient.prototype.saveFile = function(file, revision, success, errFn, noChec
 									}), mxUtils.bind(this, function(err)
 									{
 										// Simulated 
+										file.saveLevel = 12;
 										window.clearTimeout(timeoutThread);
 										
 										if (acceptResponse)
@@ -1657,6 +1679,8 @@ DriveClient.prototype.saveFile = function(file, revision, success, errFn, noChec
 											error(err);
 										}
 									}));
+									
+									file.saveLevel = 10;
 								}
 							});
 							
@@ -1729,83 +1753,64 @@ DriveClient.prototype.saveFile = function(file, revision, success, errFn, noChec
 			
 			// Indirection to generate thumbnails if enabled and supported
 			// (required because generation of thumbnails is asynchronous)
-			var fn = mxUtils.bind(this, function()
+			try
 			{
-				try
-				{
-					file.saveLevel = 2;
+				file.saveLevel = 2;
 
-					// NOTE: getThumbnail is asynchronous and returns false if no thumbnails can be created
-					if (unloading || saveAsPng || file.constructor == DriveLibrary || !this.enableThumbnails || urlParams['thumb'] == '0' ||
-						(file.desc.mimeType != null && file.desc.mimeType.substring(0, 29) != 'application/vnd.jgraph.mxfile') ||
-						!this.ui.getThumbnail(this.thumbnailWidth, mxUtils.bind(this, function(canvas)
+				// NOTE: getThumbnail is asynchronous and returns false if no thumbnails can be created
+				if (unloading || saveAsPng || file.constructor == DriveLibrary || !this.enableThumbnails || urlParams['thumb'] == '0' ||
+					(meta.mimeType != null && meta.mimeType.substring(0, 29) != 'application/vnd.jgraph.mxfile') ||
+					!this.ui.getThumbnail(this.thumbnailWidth, mxUtils.bind(this, function(canvas)
+					{
+						// Callback for getThumbnail
+						try
 						{
-							// Callback for getThumbnail
+							file.thumbTime = null;
+							var thumb = null;
+
 							try
 							{
-								file.thumbTime = null;
-								var thumb = null;
-	
-								try
+								if (canvas != null)
 								{
-									if (canvas != null)
-									{
-										// Security errors are possible
-										thumb = canvas.toDataURL('image/png');
-									}
-									
-									// Maximum thumbnail size is 2MB
-									if (thumb != null)
-									{
-										if (thumb.length > this.maxThumbnailSize)
-										{
-											thumb = null;
-										}
-										else
-										{
-											// Converts base64 data into required format for Drive (base64url with no prefix)
-											thumb = thumb.substring(thumb.indexOf(',') + 1).replace(/\+/g, '-').replace(/\//g, '_');
-										}
-									}
-								}
-								catch (e)
-								{
-									thumb = null;
+									// Security errors are possible
+									thumb = canvas.toDataURL('image/png');
 								}
 								
-								doSave(thumb, 'image/png');
+								// Maximum thumbnail size is 2MB
+								if (thumb != null)
+								{
+									if (thumb.length > this.maxThumbnailSize)
+									{
+										thumb = null;
+									}
+									else
+									{
+										// Converts base64 data into required format for Drive (base64url with no prefix)
+										thumb = thumb.substring(thumb.indexOf(',') + 1).replace(/\+/g, '-').replace(/\//g, '_');
+									}
+								}
 							}
 							catch (e)
 							{
-								criticalError(e);
+								thumb = null;
 							}
-						})))
-					{
-						// If-branch
-						file.thumbTime = null;
-						doSave(null, null, file.constructor != DriveLibrary);
-					}
-				}
-				catch (e)
+							
+							doSave(thumb, 'image/png');
+						}
+						catch (e)
+						{
+							criticalError(e);
+						}
+					})))
 				{
-					criticalError(e);
+					// If-branch
+					file.thumbTime = null;
+					doSave(null, null, file.constructor != DriveLibrary);
 				}
-			});
-			
-			// New revision is required if mime type changes, but the mime type should not be replaced
-			// if the file has been converted to the new realtime format. To check this we make sure
-			// that the mime type has not changed before updating it in the case of the legacy app.
-			// Note: We need to always check the mime type because saveFile cancels previous save
-			// attempts so if the save frequency is higher than the time for all retries than you
-			// will never see the error message and accumulate lots of changes that will be lost.
-			if (noCheck || !revision)
-			{
-				fn();
 			}
-			else
+			catch (e)
 			{
-				file.saveLevel = 10;
-				this.verifyMimeType(file.getId(), fn, true, error);
+				criticalError(e);
 			}
 		}
 		else
@@ -1817,132 +1822,6 @@ DriveClient.prototype.saveFile = function(file, revision, success, errFn, noChec
 	catch (e)
 	{
 		criticalError(e);
-	}
-};
-
-/**
- * Verifies the mime type of the given file ID.
- */
-DriveClient.prototype.verifyMimeType = function(fileId, fn, force, error)
-{
-	if (this.lastMimeCheck == null)
-	{
-		this.lastMimeCheck = 0;
-	}
-	
-	var now = new Date().getTime();
-
-	if (force || now - this.lastMimeCheck > this.mimeTypeCheckCoolOff)
-	{
-		this.lastMimeCheck = now;
-
-		if (!this.checkingMimeType)
-		{
-			this.checkingMimeType = true;
-			
-			var acceptResponse = true;
-			
-			// Allow for re-auth flow with 3x timeout
-			var timeoutThread = window.setTimeout(mxUtils.bind(this, function()
-			{
-				acceptResponse = false;
-				this.checkingMimeType = false;
-				
-				if (error != null)
-				{
-					error({code: App.ERROR_TIMEOUT, message: mxResources.get('timeout')});
-				}
-			}), 3 * this.ui.timeout);
-			
-			this.executeRequest({
-				url: '/files/' + fileId + '?supportsTeamDrives=true&fields=mimeType'
-			}, mxUtils.bind(this, function(resp)
-			{
-				window.clearTimeout(timeoutThread);
-				
-				if (acceptResponse)
-				{
-					this.checkingMimeType = false;
-					
-					if (resp != null && resp.mimeType == 'application/vnd.jgraph.mxfile.realtime')
-					{
-						this.redirectToNewApp(error, fileId);
-					}
-					else if (fn != null)
-					{
-						fn();
-					}
-				}
-			}), mxUtils.bind(this, function(err)
-			{
-				window.clearTimeout(timeoutThread);
-				
-				if (acceptResponse)
-				{
-					this.checkingMimeType = false;
-					
-					if (error != null)
-					{
-						error(err);
-					}
-				}
-			}));
-		}
-		else if (fn != null)
-		{
-			fn();
-		}
-	}
-	else if (fn != null)
-	{
-		fn();
-	}
-};
-
-/**
- * Checks if the client is authorized and calls the next step.
- */
-DriveClient.prototype.redirectToNewApp = function(error, fileId)
-{
-	this.ui.spinner.stop();
-	
-	if (!this.redirectDialogShowing)
-	{
-		this.redirectDialogShowing = true;
-		
-		var url = window.location.protocol + '//' + this.newAppHostname + '/' + this.ui.getSearch(
-			['create', 'title', 'mode', 'url', 'drive', 'splash', 'state']) + '#G' + fileId;
-		
-		var redirect = mxUtils.bind(this, function()
-		{
-			this.redirectDialogShowing = false;
-			
-			if (window.location.href == url)
-			{
-				window.location.reload();
-			}
-			else
-			{
-				window.location.href = url;
-			}
-		});
-		
-		if (error != null)
-		{
-			this.ui.confirm(mxResources.get('redirectToNewApp'), redirect, mxUtils.bind(this, function()
-			{
-				this.redirectDialogShowing = false;
-				
-				if (error != null)
-				{
-					error();
-				}
-			}));
-		}
-		else
-		{
-			this.ui.alert(mxResources.get('redirectToNewApp'), redirect);
-		}
 	}
 };
 

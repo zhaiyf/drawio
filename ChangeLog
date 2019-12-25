@@ -1,3 +1,106 @@
+17-DEC-2019: 12.4.3
+
+- Uses fast zoom preview on iOS
+- Uses mxGraph 4.0.6 beta 12
+
+14-DEC-2019: 12.4.2
+
+- Improves move/resize preview and guides
+- Adds pinch to zoom for macOS trackpad
+- Disables drop style for swimlanes
+- Adds anchor points for corners
+- Fixes edge label move preview
+- Uses mxGraph 4.0.6 beta 11
+
+12-DEC-2019: 12.4.1
+
+- Fixes initial key state for cloning
+- Uses mxGraph 4.0.6 beta 11
+
+12-DEC-2019: 12.4.0
+
+- Adds Catalan translations, credit Pere Orga pere@orga.cat
+- Fixes drag cells to library, subtree moving live preview
+- Fixes conf cloud gliffy mass import paging bug
+- Uses mxGraph 4.0.6 beta 10
+
+09-DEC-2019: 12.3.9
+
+- Fixes NPE in Lucidchart import
+- Adds check for empty layerID array in GraphViewer
+
+06-DEC-2019: 12.3.8
+
+- Improves Gliffy import of nested links
+- Adds pageID target export selection in Confluence Cloud
+
+05-DEC-2019: 12.3.7
+
+- Fixes handling of clipboard data
+- Uses mxGraph 4.0.6 beta 9
+
+03-DEC-2019: 12.3.6
+
+- Moves rotation handle to top right corner
+- Adds faster mouse wheel zoom
+- Uses mxGraph 4.0.6 beta 8
+
+02-DEC-2019: 12.3.5
+
+- Fixes deletion bugs causing search incorrect results in Jira Cloud
+- Fixes text alignment for block elements
+
+02-DEC-2019: 12.3.4
+
+- Fixes Gliffy global text size setting on import
+- Fixes settings override with configuration
+- Adds custom fonts in print output
+
+28-NOV-2019: 12.3.3
+
+- Adds more ERD shapes
+
+27-NOV-2019: 12.3.2
+
+- Fixes moving and resizing on iOS 13
+- Uses mxGraph 4.0.6 beta 8
+
+26-NOV-2019: 12.3.1
+
+- Fixes PDF export with math typesetting
+
+25-NOV-2019: 12.3.0
+
+- Fixes client-side math export in Firefox
+- Uses mxGraph 4.0.6 beta 7
+
+21-NOV-2019: 12.2.9
+
+- Fixes autosize for font size and style changes
+- Adds PDF extension check in save dialog
+- Fixes callback error in embed mode
+- Uses mxGraph 4.0.6 beta 6
+
+21-NOV-2019: 12.2.8
+
+- Removes state URL parameter
+
+19-NOV-2019: 12.2.7
+
+- Adds #_CONFIG_ hash property for configuration via URL
+- Fixes for external font support
+- Adds Extras, draw.io Configuration menu
+- Adds Link item in page context menu
+
+13-NOV-2019: 12.2.6
+
+- Reverts Google auth change in 12.2.5
+
+13-NOV-2019: 12.2.5
+
+- Add external font support
+- Adds configuration option in local storage
+
 12-NOV-2019: 12.2.4
 
 - Updates IBM stencils

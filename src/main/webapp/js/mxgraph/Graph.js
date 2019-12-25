@@ -129,7 +129,7 @@ mxGraphView.prototype.gridSteps = 4;
 mxGraphView.prototype.minGridSize = 4;
 
 // UrlParams is null in embed mode
-mxGraphView.prototype.defaultGridColor = '#e0e0e0';
+mxGraphView.prototype.defaultGridColor = '#d0d0d0';
 mxGraphView.prototype.gridColor = mxGraphView.prototype.defaultGridColor;
 
 //Units
@@ -687,8 +687,8 @@ Graph = function(container, model, renderHint, stylesheet, themes, standalone)
 	    var isForceRubberBandEvent = rubberband.isForceRubberbandEvent;
 	    rubberband.isForceRubberbandEvent = function(me)
 	    {
-		    	return isForceRubberBandEvent.apply(this, arguments) ||
-		    		(mxClient.IS_CHROMEOS && mxEvent.isShiftDown(me.getEvent())) ||
+		    	return (isForceRubberBandEvent.apply(this, arguments) && !mxEvent.isShiftDown(me.getEvent()) &&
+		    		!mxEvent.isControlDown(me.getEvent())) || (mxClient.IS_CHROMEOS && mxEvent.isShiftDown(me.getEvent())) ||
 		    		(mxUtils.hasScrollbars(this.graph.container) && mxClient.IS_FF &&
 		    		mxClient.IS_WIN && me.getState() == null && mxEvent.isTouchEvent(me.getEvent()));
 	    };
@@ -1020,11 +1020,12 @@ Graph.defaultJumpSize = 6;
 /**
  * Helper function for creating SVG data URI.
  */
-Graph.createSvgImage = function(w, h, data)
+Graph.createSvgImage = function(w, h, data, coordWidth, coordHeight)
 {
 	var tmp = unescape(encodeURIComponent(
         '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">' +
         '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="' + w + 'px" height="' + h + 'px" ' +
+        ((coordWidth != null && coordHeight != null) ? 'viewBox="0 0 ' + coordWidth + ' ' + coordHeight + '" ' : '') +
         'version="1.1">' + data + '</svg>'));
 
     return new mxImage('data:image/svg+xml;base64,' + ((window.btoa) ? btoa(tmp) : Base64.encode(tmp, true)), w, h)
@@ -1352,6 +1353,15 @@ Graph.prototype.init = function(container)
 	 */
 	Graph.prototype.currentTranslate = new mxPoint(0, 0);
 
+	/**
+	 * Returns true if fast zoom preview should be used.
+	 */
+	Graph.prototype.isFastZoomEnabled = function()
+	{
+		return urlParams['zoom'] != 'nocss' && !this.mathEnabled &&
+			!mxClient.NO_FO && !this.useCssTransforms;
+	};
+	
 	/**
 	 * Only foreignObject supported for now (no IE11).
 	 */
@@ -1752,7 +1762,7 @@ Graph.prototype.customLinkClicked = function(link)
 };
 
 /**
- * Returns true if the fiven href references an external protocol that
+ * Returns true if the given href references an external protocol that
  * should never open in a new window. Default returns true for mailto.
  */
 Graph.prototype.isExternalProtocol = function(href)
@@ -1982,12 +1992,12 @@ Graph.prototype.isReplacePlaceholders = function(cell)
 /**
  * Returns true if the given mouse wheel event should be used for zooming. This
  * is invoked if no dialogs are showing and returns true with Alt or Control
- * (except macOS) is pressed.
+ * (or cmd in macOS only) is pressed.
  */
 Graph.prototype.isZoomWheelEvent = function(evt)
 {
 	return mxEvent.isAltDown(evt) || (mxEvent.isMetaDown(evt) && mxClient.IS_MAC) ||
-		(mxEvent.isControlDown(evt) && !mxClient.IS_MAC);
+		mxEvent.isControlDown(evt);
 };
 
 /**
@@ -2506,7 +2516,8 @@ Graph.prototype.connectVertex = function(source, direction, length, evt, forceCl
 	this.model.beginUpdate();
 	try
 	{
-		var realTarget = target;
+		var swimlane = target != null && this.isSwimlane(target);
+		var realTarget = (!swimlane) ? target : null;
 		
 		if (realTarget == null && duplicate)
 		{
@@ -2542,6 +2553,12 @@ Graph.prototype.connectVertex = function(source, direction, length, evt, forceCl
 			{
 				geo.x = pt.x - geo.width / 2;
 				geo.y = pt.y - geo.height / 2;
+			}
+			
+			if (swimlane)
+			{
+				this.addCells([realTarget], target, null, null, null, true);
+				target = null;
 			}
 		}
 		
@@ -3349,12 +3366,17 @@ HoverIcons.prototype.init = function()
 
 	this.elts = [this.arrowUp, this.arrowRight, this.arrowDown, this.arrowLeft];
 
+	this.resetHandler = mxUtils.bind(this, function()
+	{
+		this.reset();
+	});
+	
 	this.repaintHandler = mxUtils.bind(this, function()
 	{
 		this.repaint();
 	});
 
-	this.graph.selectionModel.addListener(mxEvent.CHANGE, this.repaintHandler);
+	this.graph.selectionModel.addListener(mxEvent.CHANGE, this.resetHandler);
 	this.graph.model.addListener(mxEvent.CHANGE, this.repaintHandler);
 	this.graph.view.addListener(mxEvent.SCALE_AND_TRANSLATE, this.repaintHandler);
 	this.graph.view.addListener(mxEvent.TRANSLATE, this.repaintHandler);
@@ -3362,6 +3384,8 @@ HoverIcons.prototype.init = function()
 	this.graph.view.addListener(mxEvent.DOWN, this.repaintHandler);
 	this.graph.view.addListener(mxEvent.UP, this.repaintHandler);
 	this.graph.addListener(mxEvent.ROOT, this.repaintHandler);
+	this.graph.addListener(mxEvent.ESCAPE, this.resetHandler);
+	mxEvent.addListener(this.graph.container, 'scroll', this.resetHandler);
 	
 	// Resets the mouse point on escape
 	this.graph.addListener(mxEvent.ESCAPE, mxUtils.bind(this, function()
@@ -3813,6 +3837,7 @@ HoverIcons.prototype.repaint = function()
 			bds.grow(this.arrowSpacing);
 			
 			var handler = this.graph.selectionCellsHandler.getHandler(this.currentState.cell);
+			var rotationBbox = null;
 			
 			if (handler != null)
 			{
@@ -3827,25 +3852,55 @@ HoverIcons.prototype.repaint = function()
 					handler.rotationShape.node.style.display != 'none' &&
 					handler.rotationShape.boundingBox != null)
 				{
-					bds.add(handler.rotationShape.boundingBox);
+					rotationBbox = handler.rotationShape.boundingBox;
 				}
 			}
 			
-			this.arrowUp.style.left = Math.round(this.currentState.getCenterX() - this.triangleUp.width / 2 - this.tolerance) + 'px';
-			this.arrowUp.style.top = Math.round(bds.y - this.triangleUp.height - this.tolerance) + 'px';
-			mxUtils.setOpacity(this.arrowUp, this.inactiveOpacity);
+			// Positions arrows avoid collisions with rotation handle
+			var positionArrow = mxUtils.bind(this, function(arrow, x, y)
+			{
+				if (rotationBbox != null)
+				{
+					var bbox = new mxRectangle(x, y, arrow.clientWidth, arrow.clientHeight);
+					
+					if (mxUtils.intersects(bbox, rotationBbox))
+					{
+						if (arrow == this.arrowUp)
+						{
+							y -= bbox.y + bbox.height - rotationBbox.y;
+						}
+						else if (arrow == this.arrowRight)
+						{
+							x += rotationBbox.x + rotationBbox.width - bbox.x;
+						}
+						else if (arrow == this.arrowDown)
+						{
+							y += rotationBbox.y + rotationBbox.height - bbox.y;
+						}
+						else if (arrow == this.arrowLeft)
+						{
+							x -= bbox.x + bbox.width - rotationBbox.x;
+						}
+					}
+				}
+					
+				arrow.style.left = x + 'px';
+				arrow.style.top = y + 'px';
+				mxUtils.setOpacity(arrow, this.inactiveOpacity);
+			});
 			
-			this.arrowRight.style.left = Math.round(bds.x + bds.width - this.tolerance) + 'px';
-			this.arrowRight.style.top = Math.round(this.currentState.getCenterY() - this.triangleRight.height / 2 - this.tolerance) + 'px';
-			mxUtils.setOpacity(this.arrowRight, this.inactiveOpacity);
+			positionArrow(this.arrowUp,
+				Math.round(this.currentState.getCenterX() - this.triangleUp.width / 2 - this.tolerance),
+				Math.round(bds.y - this.triangleUp.height - this.tolerance));
 			
-			this.arrowDown.style.left = this.arrowUp.style.left;
-			this.arrowDown.style.top = Math.round(bds.y + bds.height - this.tolerance) + 'px';
-			mxUtils.setOpacity(this.arrowDown, this.inactiveOpacity);
+			positionArrow(this.arrowRight, Math.round(bds.x + bds.width - this.tolerance),
+				Math.round(this.currentState.getCenterY() - this.triangleRight.height / 2 - this.tolerance));
 			
-			this.arrowLeft.style.left = Math.round(bds.x - this.triangleLeft.width - this.tolerance) + 'px';
-			this.arrowLeft.style.top = this.arrowRight.style.top;
-			mxUtils.setOpacity(this.arrowLeft, this.inactiveOpacity);
+			positionArrow(this.arrowDown, parseInt(this.arrowUp.style.left),
+				Math.round(bds.y + bds.height - this.tolerance));
+			
+			positionArrow(this.arrowLeft, Math.round(bds.x - this.triangleLeft.width - this.tolerance),
+				parseInt(this.arrowRight.style.top));
 			
 			if (this.checkCollisions)
 			{
@@ -3863,7 +3918,7 @@ HoverIcons.prototype.repaint = function()
 					top = null;
 					bottom = null;
 				}
-				
+
 				var currentGeo = this.graph.getCellGeometry(this.currentState.cell);
 				
 				var checkCollision = mxUtils.bind(this, function(cell, arrow)
@@ -3872,8 +3927,8 @@ HoverIcons.prototype.repaint = function()
 					
 					// Ignores collision if vertex is more than 3 times the size of this vertex
 					if (cell != null && !this.graph.model.isAncestor(cell, this.currentState.cell) &&
-						(geo == null || currentGeo == null || (geo.height < 6 * currentGeo.height &&
-						geo.width < 6 * currentGeo.width)))
+						!this.graph.isSwimlane(cell) && (geo == null || currentGeo == null ||
+						(geo.height < 3 * currentGeo.height && geo.width < 3 * currentGeo.width)))
 					{
 						arrow.style.visibility = 'hidden';
 					}
@@ -4336,7 +4391,6 @@ HoverIcons.prototype.setCurrentState = function(state)
 			var size = (parseInt(mxUtils.getValue(this.style, 'jumpSize',
 				Graph.defaultJumpSize)) - 2) / 2 + this.strokewidth;
 			var style = mxUtils.getValue(this.style, 'jumpStyle', 'none');
-			var f = Editor.jumpSizeRatio;
 			var moveTo = true;
 			var last = null;
 			var len = null;
@@ -5681,11 +5735,14 @@ if (typeof mxVertexHandler != 'undefined')
 		 */
 		Graph.prototype.processElements = function(elt, fn)
 		{
-			var elts = elt.getElementsByTagName('*');
-			
-			for (var i = 0; i < elts.length; i++)
+			if (elt != null)
 			{
-				fn(elts[i]);
+				var elts = elt.getElementsByTagName('*');
+				
+				for (var i = 0; i < elts.length; i++)
+				{
+					fn(elts[i]);
+				}
 			}
 		};
 		
@@ -6046,13 +6103,13 @@ if (typeof mxVertexHandler != 'undefined')
 			// Creates a new edge label with a predefined text
 			var label = new mxCell();
 			label.value = 'Text';
-			label.style = 'text;html=1;resizable=0;points=[];'
+			label.style = 'text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];'
 			label.geometry = new mxGeometry(0, 0, 0, 0);
 			label.vertex = true;
 			
 			if (state != null)
 			{
-				label.style += 'align=center;verticalAlign=middle;labelBackgroundColor=#ffffff;'
+				label.style += ';labelBackgroundColor=#ffffff;'
 				label.geometry.relative = true;
 				label.connectable = false;
 				
@@ -6070,8 +6127,8 @@ if (typeof mxVertexHandler != 'undefined')
 			}
 			else
 			{
-				label.style += 'autosize=1;align=left;verticalAlign=top;spacingTop=-4;'
-		
+				label.style += ';autosize=1;'
+
 				var tr = this.view.translate;
 				label.geometry.width = 40;
 				label.geometry.height = 20;
@@ -6737,9 +6794,21 @@ if (typeof mxVertexHandler != 'undefined')
 							alt.setAttribute('font-style', 'italic');
 						}
 						
+						var txtDecor = [];
+						
 						if ((s.fontStyle & mxConstants.FONT_UNDERLINE) == mxConstants.FONT_UNDERLINE)
 						{
-							alt.setAttribute('text-decoration', 'underline');
+							txtDecor.push('underline');
+						}
+						
+						if ((s.fontStyle & mxConstants.FONT_STRIKETHROUGH) == mxConstants.FONT_STRIKETHROUGH)
+						{
+							txtDecor.push('line-through');
+						}
+						
+						if (txtDecor.length > 0)
+						{
+							alt.setAttribute('text-decoration', txtDecor.join(' '));
 						}
 						
 						try
@@ -7271,15 +7340,29 @@ if (typeof mxVertexHandler != 'undefined')
 		 */
 		mxCellEditor.prototype.alignText = function(align, evt)
 		{
-			if (!this.isTableSelected() == (evt == null || !mxEvent.isShiftDown(evt)))
+			var shiftPressed = evt != null && mxEvent.isShiftDown(evt);
+			
+			if (shiftPressed || (window.getSelection != null && window.getSelection().containsNode != null))
 			{
-				this.graph.cellEditor.setAlign(align);
+				var allSelected = true;
 				
-				this.graph.processElements(this.textarea, function(elt)
+				this.graph.processElements(this.textarea, function(node)
 				{
-					elt.removeAttribute('align');
-					elt.style.textAlign = null;
+					if (shiftPressed || window.getSelection().containsNode(node, true))
+					{
+						node.removeAttribute('align');
+						node.style.textAlign = null;
+					}
+					else
+					{
+						allSelected = false;
+					}
 				});
+				
+				if (allSelected)
+				{
+					this.graph.cellEditor.setAlign(align);
+				}
 			}
 			
 			document.execCommand('justify' + align.toLowerCase(), false, null);
@@ -7636,12 +7719,23 @@ if (typeof mxVertexHandler != 'undefined')
 							mxConstants.FONT_BOLD) == mxConstants.FONT_BOLD;
 					var italic = (mxUtils.getValue(state.style, mxConstants.STYLE_FONTSTYLE, 0) &
 							mxConstants.FONT_ITALIC) == mxConstants.FONT_ITALIC;
-					var uline = (mxUtils.getValue(state.style, mxConstants.STYLE_FONTSTYLE, 0) &
-							mxConstants.FONT_UNDERLINE) == mxConstants.FONT_UNDERLINE;
+					var txtDecor = [];
+					
+					if ((mxUtils.getValue(state.style, mxConstants.STYLE_FONTSTYLE, 0) &
+							mxConstants.FONT_UNDERLINE) == mxConstants.FONT_UNDERLINE)
+					{
+						txtDecor.push('underline');
+					}
+					
+					if ((mxUtils.getValue(state.style, mxConstants.STYLE_FONTSTYLE, 0) &
+							mxConstants.FONT_STRIKETHROUGH) == mxConstants.FONT_STRIKETHROUGH)
+					{
+						txtDecor.push('line-through');
+					}
 					
 					this.textarea.style.lineHeight = (mxConstants.ABSOLUTE_LINE_HEIGHT) ? Math.round(size * mxConstants.LINE_HEIGHT) + 'px' : mxConstants.LINE_HEIGHT;
 					this.textarea.style.fontSize = Math.round(size) + 'px';
-					this.textarea.style.textDecoration = (uline) ? 'underline' : '';
+					this.textarea.style.textDecoration = txtDecor.join(' ');
 					this.textarea.style.fontWeight = (bold) ? 'bold' : 'normal';
 					this.textarea.style.fontStyle = (italic) ? 'italic' : '';
 					this.textarea.style.fontFamily = family;
@@ -7927,7 +8021,7 @@ if (typeof mxVertexHandler != 'undefined')
 		 */
 		mxGraphHandler.prototype.updateHint = function(me)
 		{
-			if (this.shape != null)
+			if (this.pBounds != null && (this.shape != null || this.livePreviewActive))
 			{
 				if (this.hint == null)
 				{
@@ -7942,9 +8036,11 @@ if (typeof mxVertexHandler != 'undefined')
 				var unit = this.graph.view.unit;
 				
 				this.hint.innerHTML = formatHintText(x, unit) + ', ' + formatHintText(y, unit);
-	
-				this.hint.style.left = (this.shape.bounds.x + Math.round((this.shape.bounds.width - this.hint.clientWidth) / 2)) + 'px';
-				this.hint.style.top = (this.shape.bounds.y + this.shape.bounds.height + 12) + 'px';
+				
+				this.hint.style.left = (this.pBounds.x + this.currentDx +
+					Math.round((this.pBounds.width - this.hint.clientWidth) / 2)) + 'px';
+				this.hint.style.top = (this.pBounds.y + this.currentDy +
+					this.pBounds.height + Editor.hintOffset) + 'px';
 			}
 		};
 	
@@ -7958,6 +8054,19 @@ if (typeof mxVertexHandler != 'undefined')
 				this.hint.parentNode.removeChild(this.hint);
 				this.hint = null;
 			}
+		};
+		
+		/**
+		 * Moves rotation handle to top, right corner.
+		 */
+		mxVertexHandler.prototype.rotationHandleVSpacing = -12;
+		
+		mxVertexHandler.prototype.getRotationHandlePosition = function()
+		{
+			var padding = this.getHandlePadding();
+			
+			return new mxPoint(this.bounds.x + this.bounds.width - this.rotationHandleVSpacing + padding.x / 2,
+				this.bounds.y + this.rotationHandleVSpacing - padding.y / 2)
 		};
 	
 		/**
@@ -8040,7 +8149,7 @@ if (typeof mxVertexHandler != 'undefined')
 				}
 				
 				this.hint.style.left = bb.x + Math.round((bb.width - this.hint.clientWidth) / 2) + 'px';
-				this.hint.style.top = (bb.y + bb.height + 12) + 'px';
+				this.hint.style.top = (bb.y + bb.height + Editor.hintOffset) + 'px';
 				
 				if (this.linkHint != null)
 				{
@@ -8128,7 +8237,7 @@ if (typeof mxVertexHandler != 'undefined')
 			}
 			
 			this.hint.style.left = Math.round(me.getGraphX() - this.hint.clientWidth / 2) + 'px';
-			this.hint.style.top = (Math.max(me.getGraphY(), point.y) + this.state.view.graph.gridSize) + 'px';
+			this.hint.style.top = (Math.max(me.getGraphY(), point.y) + Editor.hintOffset) + 'px';
 			
 			if (this.linkHint != null)
 			{
@@ -8153,8 +8262,11 @@ if (typeof mxVertexHandler != 'undefined')
 			Graph.createSvgImage(18, 18, '<circle cx="9" cy="9" r="5" stroke="#fff" fill="' + HoverIcons.prototype.arrowFill + '" stroke-width="1"/><path d="m 7 7 L 11 11 M 7 11 L 11 7" stroke="#fff"/>');
 		HoverIcons.prototype.terminalHandle = (!mxClient.IS_SVG) ? new mxImage(IMAGE_PATH + '/handle-terminal.png', 17, 17) :
 			Graph.createSvgImage(18, 18, '<circle cx="9" cy="9" r="5" stroke="#fff" fill="' + HoverIcons.prototype.arrowFill + '" stroke-width="1"/><circle cx="9" cy="9" r="2" stroke="#fff" fill="transparent"/>');
-		HoverIcons.prototype.rotationHandle = new mxImage((mxClient.IS_SVG) ? 'data:image/png;base64,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' :
-			IMAGE_PATH + '/handle-rotate.png', 19, 21);
+		HoverIcons.prototype.rotationHandle = (!mxClient.IS_SVG) ? new mxImage(IMAGE_PATH + '/handle-rotate.png', 16, 16) :
+			Graph.createSvgImage(16, 16, '<path stroke="' + HoverIcons.prototype.arrowFill +
+				'" fill="' + HoverIcons.prototype.arrowFill +
+				'" d="M15.55 5.55L11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45zM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02zM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03zm3.89-2.42l1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.48z"/>',
+				24, 24);
 		
 		if (mxClient.IS_SVG)
 		{
@@ -8209,7 +8321,6 @@ if (typeof mxVertexHandler != 'undefined')
 		mxConnectionHandler.prototype.outlineConnect = true;
 		mxCellHighlight.prototype.keepOnTop = true;
 		mxVertexHandler.prototype.parentHighlightEnabled = true;
-		mxVertexHandler.prototype.rotationHandleVSpacing = -20;
 		
 		mxEdgeHandler.prototype.parentHighlightEnabled = true;
 		mxEdgeHandler.prototype.dblClickRemoveEnabled = true;
@@ -8244,7 +8355,7 @@ if (typeof mxVertexHandler != 'undefined')
 				mxEdgeHandler.prototype.tolerance = 12;
 				Graph.prototype.tolerance = 12;
 				
-				mxVertexHandler.prototype.rotationHandleVSpacing = -24;
+				mxVertexHandler.prototype.rotationHandleVSpacing = -16;
 				
 				// Implements a smaller tolerance for mouse events and a larger tolerance for touch
 				// events on touch devices. The default tolerance (4px) is used for mouse events.
@@ -8612,6 +8723,7 @@ if (typeof mxVertexHandler != 'undefined')
 			var states = mxGraphHandlerGetGuideStates.apply(this, arguments);
 			var result = [];
 			
+			// NOTE: Could do via isStateIgnored hook
 			for (var i = 0; i < states.length; i++)
 			{
 				if (mxUtils.getValue(states[i].style, 'part', '0') != '1')
@@ -8770,83 +8882,90 @@ if (typeof mxVertexHandler != 'undefined')
 	
 		mxVertexHandler.prototype.updateLinkHint = function(link, links)
 		{
-			if ((link == null && (links == null || links.length == 0)) ||
-				this.graph.getSelectionCount() > 1)
+			try
 			{
-				if (this.linkHint != null)
+				if ((link == null && (links == null || links.length == 0)) ||
+					this.graph.getSelectionCount() > 1)
 				{
-					this.linkHint.parentNode.removeChild(this.linkHint);
-					this.linkHint = null;
+					if (this.linkHint != null)
+					{
+						this.linkHint.parentNode.removeChild(this.linkHint);
+						this.linkHint = null;
+					}
+				}
+				else if (link != null || (links != null && links.length > 0))
+				{
+					if (this.linkHint == null)
+					{
+						this.linkHint = createHint();
+						this.linkHint.style.padding = '6px 8px 6px 8px';
+						this.linkHint.style.opacity = '1';
+						this.linkHint.style.filter = '';
+						
+						this.graph.container.appendChild(this.linkHint);
+					}
+	
+					this.linkHint.innerHTML = '';
+					
+					if (link != null)
+					{
+						this.linkHint.appendChild(this.graph.createLinkForHint(link));
+						
+						if (this.graph.isEnabled() && typeof this.graph.editLink === 'function')
+						{
+							var changeLink = document.createElement('img');
+							changeLink.setAttribute('src', Editor.editImage);
+							changeLink.setAttribute('title', mxResources.get('editLink'));
+							changeLink.setAttribute('width', '11');
+							changeLink.setAttribute('height', '11');
+							changeLink.style.marginLeft = '10px';
+							changeLink.style.marginBottom = '-1px';
+							changeLink.style.cursor = 'pointer';
+							this.linkHint.appendChild(changeLink);
+							
+							mxEvent.addListener(changeLink, 'click', mxUtils.bind(this, function(evt)
+							{
+								this.graph.setSelectionCell(this.state.cell);
+								this.graph.editLink();
+								mxEvent.consume(evt);
+							}));
+							
+							var removeLink = document.createElement('img');
+							removeLink.setAttribute('src', Dialog.prototype.clearImage);
+							removeLink.setAttribute('title', mxResources.get('removeIt', [mxResources.get('link')]));
+							removeLink.setAttribute('width', '13');
+							removeLink.setAttribute('height', '10');
+							removeLink.style.marginLeft = '4px';
+							removeLink.style.marginBottom = '-1px';
+							removeLink.style.cursor = 'pointer';
+							this.linkHint.appendChild(removeLink);
+							
+							mxEvent.addListener(removeLink, 'click', mxUtils.bind(this, function(evt)
+							{
+								this.graph.setLinkForCell(this.state.cell, null);
+								mxEvent.consume(evt);
+							}));
+						}
+					}
+	
+					if (links != null)
+					{
+						for (var i = 0; i < links.length; i++)
+						{
+							var div = document.createElement('div');
+							div.style.marginTop = (link != null || i > 0) ? '6px' : '0px';
+							div.appendChild(this.graph.createLinkForHint(
+								links[i].getAttribute('href'),
+								mxUtils.getTextContent(links[i])));
+							
+							this.linkHint.appendChild(div);
+						}
+					}
 				}
 			}
-			else if (link != null || (links != null && links.length > 0))
+			catch (e)
 			{
-				if (this.linkHint == null)
-				{
-					this.linkHint = createHint();
-					this.linkHint.style.padding = '6px 8px 6px 8px';
-					this.linkHint.style.opacity = '1';
-					this.linkHint.style.filter = '';
-					
-					this.graph.container.appendChild(this.linkHint);
-				}
-
-				this.linkHint.innerHTML = '';
-				
-				if (link != null)
-				{
-					this.linkHint.appendChild(this.graph.createLinkForHint(link));
-					
-					if (this.graph.isEnabled() && typeof this.graph.editLink === 'function')
-					{
-						var changeLink = document.createElement('img');
-						changeLink.setAttribute('src', Editor.editImage);
-						changeLink.setAttribute('title', mxResources.get('editLink'));
-						changeLink.setAttribute('width', '11');
-						changeLink.setAttribute('height', '11');
-						changeLink.style.marginLeft = '10px';
-						changeLink.style.marginBottom = '-1px';
-						changeLink.style.cursor = 'pointer';
-						this.linkHint.appendChild(changeLink);
-						
-						mxEvent.addListener(changeLink, 'click', mxUtils.bind(this, function(evt)
-						{
-							this.graph.setSelectionCell(this.state.cell);
-							this.graph.editLink();
-							mxEvent.consume(evt);
-						}));
-						
-						var removeLink = document.createElement('img');
-						removeLink.setAttribute('src', Dialog.prototype.clearImage);
-						removeLink.setAttribute('title', mxResources.get('removeIt', [mxResources.get('link')]));
-						removeLink.setAttribute('width', '13');
-						removeLink.setAttribute('height', '10');
-						removeLink.style.marginLeft = '4px';
-						removeLink.style.marginBottom = '-1px';
-						removeLink.style.cursor = 'pointer';
-						this.linkHint.appendChild(removeLink);
-						
-						mxEvent.addListener(removeLink, 'click', mxUtils.bind(this, function(evt)
-						{
-							this.graph.setLinkForCell(this.state.cell, null);
-							mxEvent.consume(evt);
-						}));
-					}
-				}
-
-				if (links != null)
-				{
-					for (var i = 0; i < links.length; i++)
-					{
-						var div = document.createElement('div');
-						div.style.marginTop = (link != null || i > 0) ? '6px' : '0px';
-						div.appendChild(this.graph.createLinkForHint(
-							links[i].getAttribute('href'),
-							mxUtils.getTextContent(links[i])));
-						
-						this.linkHint.appendChild(div);
-					}
-				}
+				// ignore
 			}
 		};
 		
@@ -8944,8 +9063,7 @@ if (typeof mxVertexHandler != 'undefined')
 				}
 				
 				this.linkHint.style.left = Math.max(0, Math.round(rs.x + (rs.width - this.linkHint.clientWidth) / 2)) + 'px';
-				this.linkHint.style.top = Math.round(b + this.verticalOffset / 2 + 6 +
-					this.state.view.graph.tolerance) + 'px';
+				this.linkHint.style.top = Math.round(b + this.verticalOffset / 2 + Editor.hintOffset) + 'px';
 			}
 		};
 		
@@ -8994,7 +9112,7 @@ if (typeof mxVertexHandler != 'undefined')
 					}
 					
 					this.linkHint.style.left = Math.max(0, Math.round(b.x + (b.width - this.linkHint.clientWidth) / 2)) + 'px';
-					this.linkHint.style.top = Math.round(b.y + b.height + 6 + this.state.view.graph.tolerance) + 'px';
+					this.linkHint.style.top = Math.round(b.y + b.height + Editor.hintOffset) + 'px';
 				}
 			}
 		};
